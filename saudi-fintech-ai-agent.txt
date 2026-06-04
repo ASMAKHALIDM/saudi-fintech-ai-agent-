@@ -1,0 +1,537 @@
+"""
+============================================================
+ SAUDI FINTECH AI-AGENT v5.0
+
+ API Keys needed:
+   - CoinMarketCap ONLY   https://coinmarketcap.com/api/
+   - NewsAPI NOT needed anymore
+============================================================
+"""
+
+import time
+import feedparser
+import pandas as pd
+import requests
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import seaborn as sns
+from IPython.display import clear_output
+from google.colab import userdata
+from transformers import pipeline
+
+# ─────────────────────────────────────────────
+# 1. INITIALIZATION
+# ─────────────────────────────────────────────
+CMC_KEY = userdata.get('coinmarketapi')
+
+print("=" * 55)
+print("  SAUDI FINTECH AI-AGENT v5.0")
+print("  News Source: RSS Feeds (No API Key Needed)")
+print("=" * 55)
+
+# Install feedparser if not installed
+try:
+    import feedparser
+except ImportError:
+    import subprocess
+    subprocess.run(['pip', 'install', 'feedparser', '-q'])
+    import feedparser
+
+print("Loading FinBERT model... (first run ~30 seconds)")
+sentiment_analyzer = pipeline(
+    "sentiment-analysis",
+    model="ProsusAI/finbert",
+    truncation=True,
+    max_length=512
+)
+print("FinBERT ready.\n")
+
+
+# ─────────────────────────────────────────────
+# 2. RSS NEWS FETCHER — No API Key Needed
+# ─────────────────────────────────────────────
+
+# RSS feeds per coin — direct from top crypto sources
+RSS_FEEDS = {
+    'BTC': [
+        'https://cointelegraph.com/rss/tag/bitcoin',
+        'https://decrypt.co/feed',
+        'https://www.coindesk.com/arc/outboundfeeds/rss/',
+    ],
+    'ETH': [
+        'https://cointelegraph.com/rss/tag/ethereum',
+        'https://decrypt.co/feed',
+        'https://www.coindesk.com/arc/outboundfeeds/rss/',
+    ],
+    'AVAX': [
+        'https://cointelegraph.com/rss/tag/avalanche',
+        'https://decrypt.co/feed',
+        'https://www.coindesk.com/arc/outboundfeeds/rss/',
+    ],
+    'BNB': [
+        'https://cointelegraph.com/rss/tag/binance',
+        'https://decrypt.co/feed',
+        'https://www.coindesk.com/arc/outboundfeeds/rss/',
+    ],
+    'SOL': [
+        'https://cointelegraph.com/rss/tag/solana',
+        'https://decrypt.co/feed',
+        'https://www.coindesk.com/arc/outboundfeeds/rss/',
+    ],
+}
+
+# Keywords to filter relevant articles
+KEYWORDS = {
+    'BTC':  ['bitcoin', 'btc'],
+    'ETH':  ['ethereum', 'eth'],
+    'AVAX': ['avalanche', 'avax'],
+    'BNB':  ['binance', 'bnb'],
+    'SOL':  ['solana', 'sol'],
+}
+
+
+def fetch_rss_headlines(symbol: str, max_articles: int = 10) -> list:
+    """
+    Fetches headlines from RSS feeds for a given symbol.
+    No API key needed. Unlimited requests. Always free.
+    """
+    feeds    = RSS_FEEDS.get(symbol, [])
+    keywords = KEYWORDS.get(symbol, [symbol.lower()])
+    headlines = []
+
+    for feed_url in feeds:
+        try:
+            feed = feedparser.parse(feed_url)
+
+            for entry in feed.entries:
+                title   = entry.get('title',   '') or ''
+                summary = entry.get('summary', '') or ''
+                combined = f"{title}. {summary}"
+
+                # Clean HTML tags if any
+                import re
+                combined = re.sub(r'<[^>]+>', '', combined)
+                combined = combined[:300].strip()
+
+                if not combined or '[Removed]' in combined:
+                    continue
+
+                # Filter by keyword relevance
+                combined_lower = combined.lower()
+                is_relevant = any(kw in combined_lower for kw in keywords)
+
+                # Also accept general crypto/market news
+                general_terms = ['crypto', 'market', 'blockchain',
+                                  'defi', 'token', 'price', 'trading']
+                is_general = any(t in combined_lower for t in general_terms)
+
+                if is_relevant or is_general:
+                    headlines.append(combined)
+
+                if len(headlines) >= max_articles:
+                    break
+
+        except Exception as e:
+            print(f"  RSS error [{symbol}] {feed_url}: {e}")
+
+        if len(headlines) >= max_articles:
+            break
+
+    print(f"  [{symbol}] {len(headlines)} headlines from RSS")
+    return headlines if headlines else [f"Crypto market update for {symbol}."]
+
+
+# ─────────────────────────────────────────────
+# 3. SENTIMENT AGGREGATOR
+# ─────────────────────────────────────────────
+def analyze_news_sentiment(headlines: list) -> dict:
+    """
+    Runs FinBERT on each headline and aggregates results.
+    """
+    if not headlines:
+        return {
+            'label':         'neutral',
+            'score':         0.5,
+            'article_count': 0,
+            'positive_pct':  0.0,
+            'negative_pct':  0.0,
+            'neutral_pct':   100.0,
+        }
+
+    results = sentiment_analyzer(headlines)
+
+    counts = {'positive': 0, 'negative': 0, 'neutral': 0}
+    scores = {'positive': [], 'negative': [], 'neutral': []}
+
+    for r in results:
+        lbl = r['label'].lower()
+        counts[lbl] += 1
+        scores[lbl].append(r['score'])
+
+    total    = len(results)
+    pcts     = {k: round((v / total) * 100, 1) for k, v in counts.items()}
+    dominant = max(counts, key=counts.get)
+    dom_scores = scores[dominant]
+    confidence = round(
+        sum(dom_scores) / len(dom_scores), 4
+    ) if dom_scores else 0.5
+
+    return {
+        'label':         dominant,
+        'score':         confidence,
+        'article_count': total,
+        'positive_pct':  pcts['positive'],
+        'negative_pct':  pcts['negative'],
+        'neutral_pct':   pcts['neutral'],
+    }
+
+
+# ─────────────────────────────────────────────
+# 4. MAIN INTELLIGENCE CYCLE
+# ─────────────────────────────────────────────
+def run_full_intelligence_cycle():
+    symbols = ['BTC', 'ETH', 'AVAX', 'BNB', 'SOL']
+    headers = {'X-CMC_PRO_API_KEY': CMC_KEY}
+
+    print("\nFetching live market data from CoinMarketCap...")
+    url_p      = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
+    market_res = requests.get(
+        url_p, headers=headers,
+        params={'symbol': ','.join(symbols)}
+    ).json()['data']
+
+    print("Fetching headlines from RSS feeds...\n")
+    records = []
+
+    for s in symbols:
+        quote  = market_res[s]['quote']['USD']
+        price  = quote['price']
+        change = quote['percent_change_24h']
+        m_cap  = quote['market_cap']
+        volume = quote['volume_24h']
+
+        headlines = fetch_rss_headlines(s, max_articles=10)
+        sentiment = analyze_news_sentiment(headlines)
+
+        records.append({
+            'Asset':      s,
+            'Price_USD':  round(price, 2),
+            '24h_Change': round(change, 2),
+            'Volume_24h': round(volume / 1e9, 2),
+            'Market_Cap': m_cap,
+            'News_Count': sentiment['article_count'],
+            'Sentiment':  sentiment['label'].upper(),
+            'Confidence': sentiment['score'],
+            'Positive_%': sentiment['positive_pct'],
+            'Negative_%': sentiment['negative_pct'],
+            'Neutral_%':  sentiment['neutral_pct'],
+            '_headlines': headlines,
+        })
+
+    df = pd.DataFrame(records)
+
+    # ── Risk Logic ────────────────────────────────
+    def get_risk(row):
+        bearish     = row['Sentiment'] == 'NEGATIVE'
+        strong_drop = row['24h_Change'] < -3
+        mild_drop   = row['24h_Change'] < -1
+        low_conf    = row['Confidence'] < 0.60
+
+        if strong_drop and bearish:
+            return 'CRITICAL'
+        elif (mild_drop and bearish) or (strong_drop and not bearish):
+            return 'WARNING'
+        elif low_conf:
+            return 'WATCH'
+        return 'STABLE'
+
+    df['Status_Internal'] = df.apply(get_risk, axis=1)
+    df['Risk_Status']     = df['Status_Internal']
+
+    # ── Advisory ─────────────────────────────────
+    def get_advice(row):
+        s   = row['Asset']
+        pos = row['Positive_%']
+        neg = row['Negative_%']
+        chg = row['24h_Change']
+        sta = row['Risk_Status']
+
+        if sta == 'CRITICAL':
+            return (f"[DANGER]  {s}: Down {abs(chg):.1f}% + "
+                    f"{neg:.0f}% negative news. Reduce exposure.")
+        elif sta == 'WARNING':
+            return (f"[CAUTION] {s}: {chg:+.1f}% price, "
+                    f"{neg:.0f}% bearish news. Pause new entries.")
+        elif sta == 'WATCH':
+            return (f"[WATCH]   {s}: Low confidence "
+                    f"({row['Confidence']:.0%}). Monitor before acting.")
+        return     (f"[STABLE]  {s}: {pos:.0f}% positive news, "
+                    f"price {chg:+.1f}%. Maintain holdings.")
+
+    df['Advisory'] = df.apply(get_advice, axis=1)
+    return df
+
+
+# ─────────────────────────────────────────────
+# 5. DISPLAY FUNCTIONS
+# ─────────────────────────────────────────────
+
+# ── 5a. Dashboard Table ───────────────────────
+def print_dashboard(df):
+    cols = ['Asset', 'Price_USD', '24h_Change', 'Volume_24h',
+            'News_Count', 'Sentiment', 'Confidence', 'Risk_Status']
+    print(f"\n{'='*72}")
+    print(f"  LIVE RISK DASHBOARD  |  {time.strftime('%Y-%m-%d  %H:%M:%S')}")
+    print(f"{'='*72}")
+    print(df[cols].to_string(index=False))
+    print(f"{'='*72}\n")
+
+
+# ── 5b. Visual Sentiment Chart ────────────────
+def plot_sentiment_breakdown(df):
+    """
+    Colored horizontal bar chart per asset.
+    Green = Positive, Red = Negative, Gray = Neutral
+    """
+    fig, axes = plt.subplots(
+        len(df), 1,
+        figsize=(12, len(df) * 1.8 + 1.5)
+    )
+    fig.patch.set_facecolor('#0d0d0d')
+    fig.suptitle(
+        'NEWS SENTIMENT BREAKDOWN  (RSS + FinBERT)',
+        color='white', fontsize=13,
+        fontweight='bold', y=1.01
+    )
+
+    risk_colors = {
+        'CRITICAL': '#FF3131',
+        'WARNING':  '#FFBD03',
+        'WATCH':    '#00BFFF',
+        'STABLE':   '#00E676',
+    }
+
+    for i, (_, row) in enumerate(df.iterrows()):
+        ax = axes[i] if len(df) > 1 else axes
+        ax.set_facecolor('#0d0d0d')
+        ax.set_xlim(0, 100)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+
+        pos = row['Positive_%']
+        neg = row['Negative_%']
+        neu = row['Neutral_%']
+
+        # Background
+        ax.barh(0.5, 100, height=0.55,
+                color='#1a1a1a', left=0, zorder=1)
+
+        # Positive bar (green)
+        if pos > 0:
+            ax.barh(0.5, pos, height=0.55,
+                    color='#00E676', left=0, zorder=2)
+            if pos > 8:
+                ax.text(
+                    pos / 2, 0.5, f"{pos:.0f}%",
+                    va='center', ha='center',
+                    color='black', fontsize=9,
+                    fontweight='bold', zorder=3
+                )
+
+        # Negative bar (red)
+        if neg > 0:
+            ax.barh(0.5, neg, height=0.55,
+                    color='#FF3131', left=pos, zorder=2)
+            if neg > 8:
+                ax.text(
+                    pos + neg / 2, 0.5, f"{neg:.0f}%",
+                    va='center', ha='center',
+                    color='white', fontsize=9,
+                    fontweight='bold', zorder=3
+                )
+
+        # Neutral bar (gray)
+        if neu > 0:
+            ax.barh(0.5, neu, height=0.55,
+                    color='#546e7a', left=pos + neg, zorder=2)
+            if neu > 8:
+                ax.text(
+                    pos + neg + neu / 2, 0.5, f"{neu:.0f}%",
+                    va='center', ha='center',
+                    color='white', fontsize=9,
+                    fontweight='bold', zorder=3
+                )
+
+        # Asset name left side
+        ax.text(
+            -1, 0.5, row['Asset'],
+            va='center', ha='right',
+            color='white', fontsize=11,
+            fontweight='bold'
+        )
+
+        # Risk + article count right side
+        r_col = risk_colors.get(row['Risk_Status'], 'white')
+        ax.text(
+            101, 0.5,
+            f"{row['News_Count']} articles   {row['Risk_Status']}",
+            va='center', ha='left',
+            color=r_col, fontsize=9,
+            fontweight='bold'
+        )
+
+    # Legend
+    legend_elements = [
+        mpatches.Patch(facecolor='#00E676', label='Positive'),
+        mpatches.Patch(facecolor='#FF3131', label='Negative'),
+        mpatches.Patch(facecolor='#546e7a', label='Neutral'),
+    ]
+    fig.legend(
+        handles=legend_elements,
+        loc='lower center', ncol=3,
+        facecolor='#1a1a1a', edgecolor='gray',
+        labelcolor='white', fontsize=10,
+        bbox_to_anchor=(0.5, -0.02)
+    )
+    plt.tight_layout()
+    plt.show()
+
+
+# ── 5c. Risk Intelligence Matrix ─────────────
+def plot_matrix(df):
+    plt.style.use('dark_background')
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+    fig.suptitle(
+        "FinBERT Risk Intelligence Matrix",
+        fontsize=14, color='white', y=1.02
+    )
+
+    color_map = {
+        'CRITICAL': '#FF3131',
+        'WARNING':  '#FFBD03',
+        'WATCH':    '#00BFFF',
+        'STABLE':   '#00E676',
+    }
+    colors = df['Risk_Status'].map(color_map).fillna('#FFFFFF')
+
+    # Scatter plot
+    axes[0].scatter(
+        df['24h_Change'], df['Confidence'],
+        c=colors, s=400,
+        edgecolors='white', linewidths=1.5
+    )
+    for _, row in df.iterrows():
+        axes[0].annotate(
+            row['Asset'],
+            (row['24h_Change'], row['Confidence']),
+            textcoords='offset points', xytext=(8, 6),
+            color='white', fontsize=10, fontweight='bold'
+        )
+    axes[0].set_title("Price Change vs Confidence", color='white')
+    axes[0].set_xlabel("24h Price Change (%)", color='lightgray')
+    axes[0].set_ylabel("FinBERT Confidence", color='lightgray')
+    axes[0].grid(alpha=0.15)
+    axes[0].axvline(0,   color='gray',   linestyle='--', alpha=0.4)
+    axes[0].axhline(0.6, color='yellow', linestyle='--', alpha=0.4)
+    axes[0].tick_params(colors='lightgray')
+
+    # Stacked bar chart
+    bar_df = df.set_index('Asset')[['Positive_%', 'Neutral_%', 'Negative_%']]
+    bar_df.plot(
+        kind='bar', stacked=True, ax=axes[1],
+        color=['#00E676', '#607d8b', '#FF3131'],
+        edgecolor='black', width=0.6,
+    )
+    axes[1].set_title("Sentiment Distribution per Asset", color='white')
+    axes[1].set_ylabel("% of Articles", color='lightgray')
+    axes[1].set_xlabel("")
+    axes[1].tick_params(axis='x', rotation=0,  colors='white')
+    axes[1].tick_params(axis='y',               colors='lightgray')
+    axes[1].legend(
+        ['Positive', 'Neutral', 'Negative'],
+        facecolor='#1a1a1a', edgecolor='gray',
+        labelcolor='white'
+    )
+    axes[1].grid(alpha=0.1, axis='y')
+    plt.tight_layout()
+    plt.show()
+
+
+# ── 5d. Executive Brief ───────────────────────
+def print_executive_brief(df):
+    critical       = len(df[df['Status_Internal'] == 'CRITICAL'])
+    warning        = len(df[df['Status_Internal'].isin(['WARNING', 'WATCH'])])
+    avg_conf       = df['Confidence'].mean()
+    total_cap      = df['Market_Cap'].sum() / 1e12
+    dom_sent       = df['Sentiment'].mode()[0]
+    total_articles = df['News_Count'].sum()
+
+    print(f"""
+{'='*60}
+   EXECUTIVE STRATEGY BRIEF  |  SAUDI FINTECH AI-AGENT
+{'='*60}
+  MARKET OVERVIEW
+   Assets Tracked   : {len(df)}
+   Combined MCap    : ${total_cap:.2f}T
+   News Articles    : {total_articles} analysed via FinBERT
+   Avg Confidence   : {avg_conf:.1%}
+
+  RISK ASSESSMENT
+   Critical Alerts  : {critical} asset(s)
+   Caution Zone     : {warning} asset(s)
+   Market Sentiment : {dom_sent}
+
+  STRATEGIC DIRECTIVES
+  1. Capital Safety   - Reduce exposure on CRITICAL assets
+  2. News Monitoring  - Re-evaluate when confidence > 85%
+  3. Data Source      - RSS Feeds (CoinDesk, CoinTelegraph)
+  4. Next Scan        - Refreshes in 30 minutes
+{'='*60}
+""")
+
+
+# ──Advisory ─────────────────────────────
+def print_advisory(df):
+    print("RULE-BASED ADVISORY (RSS + FinBERT):")
+    print("-" * 60)
+    for _, row in df.iterrows():
+        print(f"  {row['Advisory']}")
+    print("-" * 60 + "\n")
+
+
+# ─────────────────────────────────────────────
+# 6. MAIN AUTOMATION LOOP
+# ─────────────────────────────────────────────
+cycle = 0
+while True:
+    try:
+        clear_output(wait=True)
+        cycle += 1
+        print(f"\nStarting Intelligence Cycle #{cycle}...")
+        print(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+        df = run_full_intelligence_cycle()
+
+        print_dashboard(df)
+        plot_sentiment_breakdown(df)
+        plot_matrix(df)
+        print_executive_brief(df)
+        print_advisory(df)
+
+        # Save CSV
+        filename = f"fintech_report_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        df.drop(columns=['_headlines']).to_csv(
+            filename, index=False, encoding='utf-8-sig'
+        )
+        print(f"Report saved -> {filename}")
+        print(f"Next cycle in 30 minutes... (Ctrl+C to stop)\n")
+
+        time.sleep(1800)
+
+    except KeyboardInterrupt:
+        print("\nAgent stopped by user.")
+        break
+    except Exception as e:
+        print(f"\nError in cycle #{cycle}: {e}")
+        print("Retrying in 60 seconds...\n")
+        time.sleep(60)
