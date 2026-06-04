@@ -1,10 +1,6 @@
 """
 ============================================================
  SAUDI FINTECH AI-AGENT v5.0
-
- API Keys needed:
-   - CoinMarketCap ONLY   https://coinmarketcap.com/api/
-   - NewsAPI NOT needed anymore
 ============================================================
 """
 
