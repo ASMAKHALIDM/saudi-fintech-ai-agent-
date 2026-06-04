@@ -1,4 +1,4 @@
-eal-time crypto risk monitoring powered by FinBERT NLP + CoinMarketCap live data
+Real-time crypto risk monitoring powered by FinBERT NLP + CoinMarketCap live data
 
 What It Does
 This AI agent monitors 5 major crypto assets (BTC, ETH, BNB, SOL, AVAX) in real time by:
